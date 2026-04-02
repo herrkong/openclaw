@@ -363,9 +363,11 @@ export function loadSkillsFromCache(params: {
     return [];
   }
 
-  // If the root itself is a skill directory, just load it directly (but enforce size cap).
   const rootSkillMd = path.join(baseDir, "SKILL.md");
-  const seenKeys = new Set<string>();
+
+  // Root skills are not cached to avoid stale results, 
+  // as changes in child skill files are not reflected 
+  // in the root SKILL.md metadata used for cache invalidation.
   if (fs.existsSync(rootSkillMd)) {
     const rootSkillRealPath = resolveContainedSkillPath({
       source: params.source,
@@ -390,15 +392,6 @@ export function loadSkillsFromCache(params: {
       }
 
       const stat = fs.statSync(rootSkillMd);
-      const skillKey = getSkillKey(baseDir, params.source);
-
-      seenKeys.add(skillKey);
-
-      const cached = skillCache.get(skillKey);
-      if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
-        pruneStaleSkillCache(params.source, baseDir, seenKeys);
-        return cached.skills;
-      }
 
       const loaded = loadSkillsFromDirSafe({
         dir: baseDir,
@@ -413,16 +406,6 @@ export function loadSkillsFromCache(params: {
         rootRealPath: baseDirRealPath,
       });
 
-      skillCache.set(skillKey, {
-        skillDir: baseDir,
-        source: params.source,
-        skillMdPath: rootSkillMd,
-        mtimeMs: stat.mtimeMs,
-        size: stat.size,
-        skills,
-      });
-
-      pruneStaleSkillCache(params.source, baseDir, seenKeys);
       return skills;
     } catch {
       return [];
@@ -520,14 +503,16 @@ export function loadSkillsFromCache(params: {
           rootRealPath: baseDirRealPath,
         });
 
-        skillCache.set(skillKey, {
-          skillDir,
-          source: params.source,
-          skillMdPath: skillMd,
-          mtimeMs: stat.mtimeMs,
-          size: stat.size,
-          skills: filteredSkills,
-        });
+        if (filteredSkills.length > 0) {
+          skillCache.set(skillKey, {
+            skillDir,
+            source: params.source,
+            skillMdPath: skillMd,
+            mtimeMs: stat.mtimeMs,
+            size: stat.size,
+            skills: filteredSkills,
+          });
+        }
 
         loadedSkills.push(...filteredSkills);
 
