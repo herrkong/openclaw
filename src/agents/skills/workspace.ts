@@ -364,6 +364,7 @@ export function loadSkillsFromCache(params: {
   }
 
   const rootSkillMd = path.join(baseDir, "SKILL.md");
+  const seenKeys = new Set<string>();
 
   // Root skills are not cached to avoid stale results, 
   // as changes in child skill files are not reflected 
