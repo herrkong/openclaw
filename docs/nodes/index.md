@@ -43,7 +43,7 @@ pending request is superseded and a new `requestId` is created. Re-run
 Notes:
 
 - `nodes status` marks a node as **paired** when its device pairing role includes `node`.
-- `node.pair.*` (CLI: `openclaw nodes pending/approve/reject`) is a separate gateway-owned
+- `node.pair.*` (CLI: `openclaw nodes pending/approve/reject/rename`) is a separate gateway-owned
   node pairing store; it does **not** gate the WS `connect` handshake.
 
 ## Remote node host (system.run)
@@ -156,6 +156,8 @@ Or per session:
 
 Once set, any `exec` call with `host=node` runs on the node host (subject to the
 node allowlist/approvals).
+
+`host=auto` will not silently hop to the node just because a tool call requests it. If you want node exec, set `tools.exec.host=node` or `/exec host=node ...` explicitly.
 
 Related:
 

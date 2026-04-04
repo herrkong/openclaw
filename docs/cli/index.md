@@ -106,6 +106,7 @@ openclaw [--dev] [--profile <name>] <command>
     set
     unset
     file
+    schema
     validate
   completion
   doctor
@@ -123,16 +124,26 @@ openclaw [--dev] [--profile <name>] <command>
   reset
   uninstall
   update
+    wizard
+    status
   channels
     list
     status
+    capabilities
+    resolve
     logs
     add
     remove
     login
     logout
   directory
+    self
+    peers list
+    groups list|members
   skills
+    search
+    install
+    update
     list
     info
     check
@@ -153,6 +164,28 @@ openclaw [--dev] [--profile <name>] <command>
   message
     send
     broadcast
+    poll
+    react
+    reactions
+    read
+    edit
+    delete
+    pin
+    unpin
+    pins
+    permissions
+    search
+    thread create|list|reply
+    emoji list|upload
+    sticker send|upload
+    role info|add|remove
+    channel info|list
+    member info
+    voice status
+    event list|create
+    timeout
+    kick
+    ban
   agent
   agents
     list
@@ -164,21 +197,26 @@ openclaw [--dev] [--profile <name>] <command>
     set-identity
   acp
   mcp
+    serve
+    list
+    show
+    set
+    unset
   status
   health
   sessions
     cleanup
   tasks
     list
+    audit
+    maintenance
     show
     notify
     cancel
-  flows
-    list
-    show
-    cancel
+    flow list|show|cancel
   gateway
     call
+    usage-cost
     health
     status
     probe
@@ -227,13 +265,34 @@ openclaw [--dev] [--profile <name>] <command>
     runs
     run
   nodes
+    status
+    describe
+    list
+    pending
+    approve
+    reject
+    rename
+    invoke
+    notify
+    push
+    canvas snapshot|present|hide|navigate|eval
+    canvas a2ui push|reset
+    camera list|snap|clip
+    screen record
+    location get
   devices
+    list
+    remove
+    clear
+    approve
+    reject
+    rotate
+    revoke
   node
     run
     status
     install
     uninstall
-    start
     stop
     restart
   approvals
@@ -312,7 +371,7 @@ Manage extensions and their config:
 
 - `openclaw plugins list` — discover plugins (use `--json` for machine output).
 - `openclaw plugins inspect <id>` — show details for a plugin (`info` is an alias).
-- `openclaw plugins install <path|.tgz|npm-spec|plugin@marketplace>` — install a plugin (or add a plugin path to `plugins.load.paths`).
+- `openclaw plugins install <path|.tgz|npm-spec|plugin@marketplace>` — install a plugin (or add a plugin path to `plugins.load.paths`; use `--force` to overwrite an existing install target).
 - `openclaw plugins marketplace list <marketplace>` — list marketplace entries before install.
 - `openclaw plugins enable <id>` / `disable <id>` — toggle `plugins.entries.<id>.enabled`.
 - `openclaw plugins doctor` — report plugin load errors.
@@ -367,7 +426,7 @@ Options:
 - `--mode <local|remote>`
 - `--flow <quickstart|advanced|manual>` (manual is an alias for advanced)
 - `--auth-choice <choice>` where `<choice>` is one of:
-  `setup-token`, `token`, `chutes`, `deepseek-api-key`, `openai-codex`, `openai-api-key`,
+  `chutes`, `deepseek-api-key`, `openai-codex`, `openai-api-key`,
   `openrouter-api-key`, `kilocode-api-key`, `litellm-api-key`, `ai-gateway-api-key`,
   `cloudflare-ai-gateway-api-key`, `moonshot-api-key`, `moonshot-api-key-cn`,
   `kimi-code-api-key`, `synthetic-api-key`, `venice-api-key`, `together-api-key`,
@@ -378,10 +437,6 @@ Options:
   `mistral-api-key`, `volcengine-api-key`, `byteplus-api-key`, `qianfan-api-key`,
   `modelstudio-standard-api-key-cn`, `modelstudio-standard-api-key`,
   `modelstudio-api-key-cn`, `modelstudio-api-key`, `custom-api-key`, `skip`
-- `--token-provider <id>` (non-interactive; used with `--auth-choice token`)
-- `--token <token>` (non-interactive; used with `--auth-choice token`)
-- `--token-profile-id <id>` (non-interactive; default: `<provider>:manual`)
-- `--token-expires-in <duration>` (non-interactive; e.g. `365d`, `12h`)
 - `--secret-input-mode <plaintext|ref>` (default `plaintext`; use `ref` to store provider default env refs instead of plaintext keys)
 - `--anthropic-api-key <key>`
 - `--openai-api-key <key>`
@@ -570,7 +625,7 @@ Subcommands:
 
 ### `webhooks gmail`
 
-Gmail Pub/Sub hook setup + runner. See [/automation/gmail-pubsub](/automation/gmail-pubsub).
+Gmail Pub/Sub hook setup + runner. See [Gmail Pub/Sub](/automation/cron-jobs#gmail-pubsub-integration).
 
 Subcommands:
 
@@ -814,6 +869,9 @@ List and manage [background task](/automation/tasks) runs across agents.
 - `tasks notify <id>` — change notification policy for a task run
 - `tasks cancel <id>` — cancel a running task
 - `tasks audit` — surface operational issues (stale, lost, delivery failures)
+- `tasks flow list` — list active and recent Task Flow flows
+- `tasks flow show <lookup>` — inspect a flow by id or lookup key
+- `tasks flow cancel <lookup>` — cancel a running flow and its active tasks
 
 ## Gateway
 
@@ -924,17 +982,13 @@ Tip: these config write RPCs preflight active SecretRef resolution for refs in t
 
 See [/concepts/models](/concepts/models) for fallback behavior and scanning strategy.
 
-Anthropic setup-token (supported):
-
-```bash
-claude setup-token
-openclaw models auth setup-token --provider anthropic
-openclaw models status
-```
-
-Policy note: this is technical compatibility. Anthropic has blocked some
-subscription usage outside Claude Code in the past; verify current Anthropic
-terms before relying on setup-token in production.
+Billing note: Anthropic changed third-party harness billing on **April 4, 2026
+at 12:00 PM PT / 8:00 PM BST**. Anthropic says Claude subscription limits no
+longer cover OpenClaw, and Claude CLI usage in OpenClaw now requires **Extra
+Usage** billed separately from the subscription. For production, prefer an
+Anthropic API key or another supported subscription-style provider such as
+OpenAI Codex, Alibaba Cloud Model Studio Coding Plan, MiniMax Coding Plan, or
+Z.AI / GLM Coding Plan.
 
 Anthropic Claude CLI migration:
 
@@ -942,7 +996,13 @@ Anthropic Claude CLI migration:
 openclaw models auth login --provider anthropic --method cli --set-default
 ```
 
-Note: `--auth-choice anthropic-cli` is a deprecated legacy alias. Use `models auth login` instead.
+Onboarding shortcut: `openclaw onboard --auth-choice anthropic-cli`
+
+Existing legacy Anthropic token profiles still run if already configured, but
+OpenClaw no longer offers Anthropic setup-token as a new auth path.
+
+Legacy alias note: `claude-cli` is the deprecated onboarding auth-choice alias.
+Use `anthropic-cli` for onboarding, or use `models auth login` directly.
 
 ### `models` (root)
 
@@ -1035,11 +1095,16 @@ Options:
 
 Options:
 
-- `add`: interactive auth helper
+- `add`: interactive token-auth helper
 - `login`: `--provider <name>`, `--method <method>`, `--set-default`
 - `login-github-copilot`: GitHub Copilot OAuth login flow
-- `setup-token`: `--provider <name>` (default `anthropic`), `--yes`
+- `setup-token`: `--provider <name>`, `--yes`
 - `paste-token`: `--provider <name>`, `--profile-id <id>`, `--expires-in <duration>`
+
+Notes:
+
+- `setup-token` and `paste-token` are generic token commands for providers that expose token auth methods.
+- Anthropic legacy token profiles still run if already configured, but Anthropic no longer supports `setup-token` or `paste-token` as a new OpenClaw auth path.
 
 ### `models auth order get|set|clear`
 
