@@ -3,7 +3,20 @@ import {
   definePluginEntry,
   type ProviderResolveDynamicModelContext,
   type ProviderRuntimeModel,
+  type ProviderWrapStreamFnContext,
 } from "openclaw/plugin-sdk/plugin-entry";
+import {
+  applyOpenrouterConfig,
+  buildOpenrouterProvider,
+  buildProviderReplayFamilyHooks,
+  buildProviderStreamFamilyHooks,
+  createProviderApiKeyAuthMethod,
+  DEFAULT_CONTEXT_TOKENS,
+  getOpenRouterModelCapabilities,
+  loadOpenRouterModelCapabilities,
+  OPENROUTER_DEFAULT_MODEL_REF,
+  openrouterMediaUnderstandingProvider,
+} from "./register.runtime.js";
 
 const PROVIDER_ID = "openrouter";
 const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
@@ -19,22 +32,11 @@ export default definePluginEntry({
   id: "openrouter",
   name: "OpenRouter Provider",
   description: "Bundled OpenRouter provider plugin",
-  async register(api) {
-    const {
-      buildPassthroughGeminiSanitizingReplayPolicy,
-      composeProviderStreamWrappers,
-      createOpenRouterSystemCacheWrapper,
-      createOpenRouterWrapper,
-      createProviderApiKeyAuthMethod,
-      DEFAULT_CONTEXT_TOKENS,
-      getOpenRouterModelCapabilities,
-      isProxyReasoningUnsupported,
-      loadOpenRouterModelCapabilities,
-      OPENROUTER_DEFAULT_MODEL_REF,
-      openrouterMediaUnderstandingProvider,
-      applyOpenrouterConfig,
-      buildOpenrouterProvider,
-    } = await import("./register.runtime.js");
+  register(api) {
+    const PASSTHROUGH_GEMINI_REPLAY_HOOKS = buildProviderReplayFamilyHooks({
+      family: "passthrough-gemini",
+    });
+    const OPENROUTER_THINKING_STREAM_HOOKS = buildProviderStreamFamilyHooks("openrouter-thinking");
 
     function buildDynamicOpenRouterModel(
       ctx: ProviderResolveDynamicModelContext,
@@ -77,6 +79,28 @@ export default definePluginEntry({
           context,
           options,
         );
+    }
+
+    function wrapOpenRouterProviderStream(
+      ctx: ProviderWrapStreamFnContext,
+    ): StreamFn | null | undefined {
+      const providerRouting =
+        ctx.extraParams?.provider != null && typeof ctx.extraParams.provider === "object"
+          ? (ctx.extraParams.provider as Record<string, unknown>)
+          : undefined;
+      const routedStreamFn = providerRouting
+        ? injectOpenRouterRouting(ctx.streamFn, providerRouting)
+        : ctx.streamFn;
+      const wrapStreamFn = OPENROUTER_THINKING_STREAM_HOOKS.wrapStreamFn ?? undefined;
+      if (!wrapStreamFn) {
+        return routedStreamFn;
+      }
+      return (
+        wrapStreamFn({
+          ...ctx,
+          streamFn: routedStreamFn,
+        }) ?? undefined
+      );
     }
 
     function isOpenRouterCacheTtlModel(modelId: string): boolean {
@@ -129,26 +153,10 @@ export default definePluginEntry({
       prepareDynamicModel: async (ctx) => {
         await loadOpenRouterModelCapabilities(ctx.modelId);
       },
-      buildReplayPolicy: ({ modelId }) => buildPassthroughGeminiSanitizingReplayPolicy(modelId),
+      ...PASSTHROUGH_GEMINI_REPLAY_HOOKS,
       resolveReasoningOutputMode: () => "native",
       isModernModelRef: () => true,
-      wrapStreamFn: (ctx) => {
-        const providerRouting =
-          ctx.extraParams?.provider != null && typeof ctx.extraParams.provider === "object"
-            ? (ctx.extraParams.provider as Record<string, unknown>)
-            : undefined;
-        const skipReasoningInjection =
-          ctx.modelId === "auto" || isProxyReasoningUnsupported(ctx.modelId);
-        const openRouterThinkingLevel = skipReasoningInjection ? undefined : ctx.thinkingLevel;
-        return composeProviderStreamWrappers(
-          ctx.streamFn,
-          providerRouting
-            ? (streamFn) => injectOpenRouterRouting(streamFn, providerRouting)
-            : undefined,
-          (streamFn) => createOpenRouterWrapper(streamFn, openRouterThinkingLevel),
-          (streamFn) => createOpenRouterSystemCacheWrapper(streamFn),
-        );
-      },
+      wrapStreamFn: wrapOpenRouterProviderStream,
       isCacheTtlEligible: (ctx) => isOpenRouterCacheTtlModel(ctx.modelId),
     });
     api.registerMediaUnderstandingProvider(openrouterMediaUnderstandingProvider);
