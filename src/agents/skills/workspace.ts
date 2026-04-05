@@ -11,7 +11,7 @@ import { resolveBundledSkillsDir } from "./bundled-dir.js";
 import { shouldIncludeSkill } from "./config.js";
 import { normalizeSkillFilter } from "./filter.js";
 import { resolveOpenClawMetadata, resolveSkillInvocationPolicy } from "./frontmatter.js";
-import { loadSkillsFromDirSafe, readSkillFrontmatterSafe } from "./local-loader.js";
+import { loadDirectSkillFromDirSafe, loadSkillsFromDirSafe, readSkillFrontmatterSafe } from "./local-loader.js";
 import { resolvePluginSkillDirs } from "./plugin-skills.js";
 import { serializeByKey } from "./serialize.js";
 import { formatSkillsForPrompt, type Skill } from "./skill-contract.js";
@@ -301,28 +301,34 @@ function pruneStaleSkillCache(
   }
 }
 
+
 export function loadSkills(params: {
   dir: string;
   source: string;
   limits: ResolvedSkillsLimits;
 }): Skill[] {
   return loadSkillsFromCache(params);
-  // Fallback path for debugging / rollback if cache logic fails
-  // Currently disabled to enforce cache-first loading
+  // Fallback path for debugging / rollback if cache logic fails.
   // return loadSkillsFromFile(params);
 }
 
-
-// Loads skills from a directory with caching semantics.
-//
-// This function resolves the root and handles nested skill roots, then attempts
-// to read SKILL.md files in the root or immediate child directories. It uses a
-// memory cache keyed by source and resolved directory path, validating file
-// mtime/size to return up-to-date skill sets. Stale cache entries under the
-// same source/root are pruned while keeping valid cached results for performance.
-//
-// The behavior mirrors `loadSkillsFromFile` but adds cache hit/miss handling
-// and optimization for repeated lookups.
+/**
+ * Loads skills from a directory with caching semantics.
+ *
+ * This function resolves the root and handles nested skill roots, then attempts
+ * to read SKILL.md files in the root or immediate child directories.
+ *
+ * Cache entries are only stored for direct single-skill directories whose
+ * outputs are determined by that directory's own SKILL.md. Nested fallback
+ * loads are intentionally not cached, because loadSkillsFromDirSafe() may
+ * return skills from child directories when the parent SKILL.md is present
+ * but invalid, and those results are not fully described by the parent
+ * SKILL.md metadata alone.
+ *
+ * Stale cache entries under the same source/root are pruned, while a global
+ * TTL/LRU-style eviction policy prevents process-wide cache growth across
+ * many different roots over time.
+ */
 export function loadSkillsFromCache(params: {
   dir: string;
   source: string;
@@ -351,9 +357,9 @@ export function loadSkillsFromCache(params: {
   const rootSkillMd = path.join(baseDir, "SKILL.md");
   const seenKeys = new Set<string>();
 
-  // Root skills are not cached to avoid stale results,
-  // as changes in child skill files are not reflected
-  // in the root SKILL.md metadata used for cache invalidation.
+  // Root skills are not cached. A root SKILL.md can participate in nested
+  // loading behavior, and keeping it uncached avoids stale results from more
+  // complex directory layouts.
   if (fs.existsSync(rootSkillMd)) {
     const rootSkillRealPath = resolveContainedSkillPath({
       source: params.source,
@@ -383,14 +389,12 @@ export function loadSkillsFromCache(params: {
         maxBytes: params.limits.maxSkillFileBytes,
       });
 
-      const skills = filterLoadedSkillsInsideRoot({
+      return filterLoadedSkillsInsideRoot({
         skills: unwrapLoadedSkills(loaded),
         source: params.source,
         rootDir,
         rootRealPath: baseDirRealPath,
       });
-
-      return skills;
     } catch {
       return [];
     }
@@ -422,7 +426,9 @@ export function loadSkillsFromCache(params: {
   const loadedSkills: Skill[] = [];
   const now = Date.now();
 
-  // Only consider immediate subfolders that look like skills (have SKILL.md) and are under size cap.
+  // Only consider immediate subfolders that expose a parent SKILL.md and are
+  // under the size cap. Cache entries are only used for direct single-skill
+  // loads whose outputs are determined by that directory's own SKILL.md.
   for (const name of limitedChildren) {
     const skillDir = path.join(baseDir, name);
     const skillDirRealPath = resolveContainedSkillPath({
@@ -475,8 +481,9 @@ export function loadSkillsFromCache(params: {
         cached.skillMdRealPath === skillMdRealPath;
 
       if (cacheUsable) {
-        // Revalidate SKILL.md path before serving cached entries so the
-        // cache-hit path preserves the same safety guarantees as the miss path.
+        // Revalidate SKILL.md before serving cached entries so the cache-hit
+        // path preserves the same containment and anti-symlink guarantees as
+        // the miss path.
         const revalidatedSkillMdRealPath = resolveContainedSkillPath({
           source: params.source,
           rootDir,
@@ -484,7 +491,10 @@ export function loadSkillsFromCache(params: {
           candidatePath: skillMd,
         });
 
-        if (revalidatedSkillMdRealPath && revalidatedSkillMdRealPath === cached.skillMdRealPath) {
+        if (
+          revalidatedSkillMdRealPath &&
+          revalidatedSkillMdRealPath === cached.skillMdRealPath
+        ) {
           cached.lastAccessedAt = now;
           loadedSkills.push(...cached.skills);
 
@@ -495,31 +505,61 @@ export function loadSkillsFromCache(params: {
         }
       }
 
-      const loaded = loadSkillsFromDirSafe({
-        dir: skillDir,
+      // Only cache direct single-skill loads. If the parent SKILL.md is present
+      // but invalid, loadSkillsFromDirSafe() may fall back to nested child skill
+      // directories. Those fallback-loaded results can depend on child
+      // skillDir/*/SKILL.md files, so they are returned but not cached because
+      // the parent skillDir/SKILL.md metadata alone is not sufficient for
+      // invalidation.
+      const directSkill = loadDirectSkillFromDirSafe({
+        skillDir,
         source: params.source,
+        rootRealPath: skillDirRealPath,
         maxBytes: params.limits.maxSkillFileBytes,
       });
 
-      const filteredSkills = filterLoadedSkillsInsideRoot({
-        skills: unwrapLoadedSkills(loaded),
-        source: params.source,
-        rootDir,
-        rootRealPath: baseDirRealPath,
-      });
+      let filteredSkills: Skill[];
 
-      if (filteredSkills.length > 0) {
-        skillCache.set(skillKey, {
-          skillDir,
+      if (directSkill) {
+        filteredSkills = filterLoadedSkillsInsideRoot({
+          skills: [directSkill],
           source: params.source,
-          skillMdPath: skillMd,
-          skillMdRealPath,
-          mtimeMs: stat.mtimeMs,
-          size: stat.size,
-          skills: filteredSkills,
-          lastAccessedAt: now,
+          rootDir,
+          rootRealPath: baseDirRealPath,
         });
+
+        if (filteredSkills.length > 0) {
+          skillCache.set(skillKey, {
+            skillDir,
+            source: params.source,
+            skillMdPath: skillMd,
+            skillMdRealPath,
+            mtimeMs: stat.mtimeMs,
+            size: stat.size,
+            skills: filteredSkills,
+            lastAccessedAt: now,
+          });
+        } else {
+          skillCache.delete(skillKey);
+        }
       } else {
+        const loaded = loadSkillsFromDirSafe({
+          dir: skillDir,
+          source: params.source,
+          maxBytes: params.limits.maxSkillFileBytes,
+        });
+
+        filteredSkills = filterLoadedSkillsInsideRoot({
+          skills: unwrapLoadedSkills(loaded),
+          source: params.source,
+          rootDir,
+          rootRealPath: baseDirRealPath,
+        });
+
+        // Do not cache fallback-loaded nested skills. Their effective inputs can
+        // include child SKILL.md files under skillDir/*, which are not fully
+        // described by the parent skillDir/SKILL.md metadata used for direct
+        // single-skill cache invalidation.
         skillCache.delete(skillKey);
       }
 
@@ -709,8 +749,6 @@ function loadSkillEntries(
   },
 ): SkillEntry[] {
   const limits = resolveSkillsLimits(opts?.config);
-
-
 
   const managedSkillsDir = opts?.managedSkillsDir ?? path.join(CONFIG_DIR, "skills");
   const workspaceSkillsDir = path.resolve(workspaceDir, "skills");
